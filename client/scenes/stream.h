@@ -151,6 +151,7 @@ private:
 		audio,
 		streaming,
 		post_processing,
+		mixed_reality,
 		devices,
 		tracking,
 		theme,
@@ -280,6 +281,10 @@ private:
 
 	void setup(const to_headset::video_stream_description &);
 	void setup_reprojection_swapchain(uint32_t width, uint32_t height);
+	static stream_defoveator::mixed_reality mixed_reality_params(
+	        const configuration::mixed_reality_settings &,
+	        const std::array<XrPosef, view_count> & pose,
+	        const std::array<XrFovf, view_count> & fov);
 
 	vk::raii::QueryPool query_pool = nullptr;
 	bool query_pool_filled = false;

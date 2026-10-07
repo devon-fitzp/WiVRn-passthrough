@@ -23,6 +23,7 @@
 #include "xr/space.h"
 #include "xr/system.h"
 #include <glm/gtc/matrix_access.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <magic_enum.hpp>
 #include <openxr/openxr.h>
@@ -1089,11 +1090,16 @@ void scenes::stream::render(const XrFrameState & frame_state)
 		const float scale = std::lerp(1, constants::stream::dimming_scale, x);
 		const float bias = std::lerp(0, constants::stream::dimming_bias, x);
 
+		const auto & mr_config = application::get_config().mixed_reality;
+		const bool mixed_reality = use_alpha or mr_config.active();
+		const auto mr = mixed_reality_params(mr_config, pose, fov);
+
 		defoveator->defoveate(command_buffer,
 		                      foveation,
 		                      images,
 		                      {scale, scale, scale, 1.},
 		                      {bias, bias, bias, 0.},
+		                      mr,
 		                      image_index);
 
 #if WIVRN_USE_V4L2
@@ -1165,12 +1171,12 @@ void scenes::stream::render(const XrFrameState & frame_state)
 #endif
 		swapchain.release();
 
-		if (use_alpha)
+		if (mixed_reality)
 			session.enable_passthrough(system);
 		else
 			session.disable_passthrough();
 
-		render_start(use_alpha, frame_state.predictedDisplayTime);
+		render_start(mixed_reality, frame_state.predictedDisplayTime);
 
 		// Add the layer with the streamed content
 		std::array<XrCompositionLayerProjectionView, view_count> layer_view;
@@ -1193,7 +1199,7 @@ void scenes::stream::render(const XrFrameState & frame_state)
 			        };
 		}
 		add_projection_layer(
-		        use_alpha ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT : 0,
+		        mixed_reality ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT : 0,
 		        application::space(xr::spaces::world),
 		        layer_view);
 
@@ -1304,6 +1310,42 @@ void scenes::stream::setup(const to_headset::video_stream_description & descript
 
 	if (defoveator)
 		defoveator->reset_pipelines();
+}
+
+stream_defoveator::mixed_reality scenes::stream::mixed_reality_params(
+        const configuration::mixed_reality_settings & config,
+        const std::array<XrPosef, view_count> & pose,
+        const std::array<XrFovf, view_count> & fov)
+{
+	stream_defoveator::mixed_reality mr;
+	if (config.chroma_key)
+		mr.key_color = {config.key_color.r, config.key_color.g, config.key_color.b, 1};
+	mr.key_params = {config.key_threshold, config.key_smoothness, config.key_spill, config.opacity};
+
+	if (not config.cutouts)
+		return mr;
+
+	for (size_t view = 0; view < view_count; ++view)
+	{
+		// Use the same pose and fov as the projection layer, so the runtime reprojects the cutouts with the image
+		const glm::mat4 view_projection = projection_matrix(fov[view], 0.05) * view_matrix(pose[view]);
+		const glm::vec4 eye{pose[view].position.x, pose[view].position.y, pose[view].position.z, 1};
+
+		for (const auto & box: config.boxes)
+		{
+			const glm::mat4 model = glm::scale(
+			        glm::translate(glm::mat4(1), box.position) * glm::mat4_cast(box.orientation),
+			        box.half_extent);
+
+			mr.cutouts[view].push_back({
+			        .mvp = view_projection * model,
+			        .eye = glm::inverse(model) * eye,
+			        .half_extent = glm::vec4(box.half_extent, config.cutout_feather),
+			});
+		}
+	}
+
+	return mr;
 }
 
 void scenes::stream::setup_reprojection_swapchain(uint32_t swapchain_width, uint32_t swapchain_height)

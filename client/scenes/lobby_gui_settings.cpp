@@ -58,6 +58,11 @@ void scenes::lobby::gui_post_processing()
 	wivrn::gui::settings_post_processing(lobby_settings_context(instance, session, system, *imgui_ctx, stream_view, server_hid_forwarding));
 }
 
+void scenes::lobby::gui_mixed_reality()
+{
+	wivrn::gui::settings_mixed_reality(lobby_settings_context(instance, session, system, *imgui_ctx, stream_view, server_hid_forwarding));
+}
+
 void scenes::lobby::gui_audio()
 {
 	wivrn::gui::settings_audio(lobby_settings_context(instance, session, system, *imgui_ctx, stream_view, server_hid_forwarding));

@@ -21,6 +21,8 @@
 
 #include "vk/allocation.h"
 #include "wivrn_packets.h"
+#include <glm/glm.hpp>
+#include <vector>
 #include <vulkan/vulkan_raii.hpp>
 #include <openxr/openxr.h>
 
@@ -48,6 +50,11 @@ class stream_defoveator
 	pipeline_t pipeline_rgb[view_count];
 	pipeline_t pipeline_a[view_count];
 
+	// Mixed reality cutouts
+	buffer_allocation cube_buffer;
+	vk::raii::PipelineLayout cutout_layout = nullptr;
+	vk::raii::Pipeline cutout_pipeline = nullptr;
+
 	// Destination images
 	std::vector<vk::Image> output_images;
 	std::vector<vk::raii::ImageView> output_image_views;
@@ -58,6 +65,7 @@ class stream_defoveator
 	vertex * get_vertices(size_t view);
 
 	pipeline_t & ensure_pipeline(size_t view, vk::Sampler rgb, vk::Sampler a);
+	void ensure_cutout_pipeline();
 
 public:
 	struct input
@@ -70,6 +78,20 @@ public:
 		vk::Sampler sampler_a;
 		vk::Rect2D rect_a;
 		vk::ImageLayout layout_a;
+	};
+
+	struct cutout
+	{
+		glm::mat4 mvp;         // unit cube [-1, 1]^3 to clip space
+		glm::vec4 eye;         // eye position in unit cube coordinates
+		glm::vec4 half_extent; // xyz: box half size in metres, w: feather width in metres
+	};
+
+	struct mixed_reality
+	{
+		std::array<float, 4> key_color{};             // rgb, w > 0 to enable chroma key
+		std::array<float, 4> key_params{0, 0, 0, 1};  // threshold, smoothness, spill, opacity
+		std::array<std::vector<cutout>, 2> cutouts{}; // per view
 	};
 
 	stream_defoveator(
@@ -89,6 +111,7 @@ public:
 	        const std::array<input, 2> & inputs,
 	        std::array<float, 4> scale,
 	        std::array<float, 4> bias,
+	        const mixed_reality & mr,
 	        int destination);
 
 	static XrExtent2Di defoveated_size(const wivrn::to_headset::foveation_parameter &);

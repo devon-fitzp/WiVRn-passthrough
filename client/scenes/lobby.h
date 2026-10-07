@@ -128,6 +128,7 @@ class lobby : public scene_impl<lobby>
 		audio,
 		streaming,
 		post_processing,
+		mixed_reality,
 		devices,
 		tracking,
 		system,
@@ -242,6 +243,7 @@ class lobby : public scene_impl<lobby>
 	void gui_tracking();
 	void gui_system();
 	void gui_post_processing();
+	void gui_mixed_reality();
 	void gui_customize(XrTime predicted_display_time);
 	void gui_theme();
 	void apply_theme_settings(); // push the saved theme config into the global theme

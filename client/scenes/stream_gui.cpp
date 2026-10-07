@@ -441,6 +441,9 @@ void scenes::stream::gui_settings(float)
 		case settings_page::post_processing:
 			wivrn::gui::settings_post_processing(ctx);
 			break;
+		case settings_page::mixed_reality:
+			wivrn::gui::settings_mixed_reality(ctx);
+			break;
 		case settings_page::devices:
 			wivrn::gui::settings_devices(ctx);
 			break;
@@ -669,6 +672,13 @@ void scenes::stream::draw_gui(XrTime predicted_display_time, XrDuration predicte
 
 	bool interactable = true;
 	XrSpace world_space = application::space(xr::spaces::world);
+
+	// the renderer is shared with the lobby, its debug draws must be reset every frame
+	renderer->debug_draw_clear();
+	const bool cutout_preview = gui_status == stream_tab::settings and current_settings_page == settings_page::mixed_reality;
+	if (cutout_preview)
+		wivrn::gui::draw_cutout_preview(*renderer, application::get_config(), glm::mat4(1));
+
 	auto views = session.locate_views(viewconfig, predicted_display_time, world_space).second;
 
 	switch (gui_status)
@@ -1030,6 +1040,8 @@ void scenes::stream::draw_gui(XrTime predicted_display_time, XrDuration predicte
 			settings_item(ICON_FA_VOLUME_HIGH, _cS("tab label", "Audio"), settings_page::audio);
 			settings_item(ICON_FA_TOWER_BROADCAST, _cS("tab label", "Streaming"), settings_page::streaming);
 			settings_item(ICON_FA_WAND_MAGIC_SPARKLES, _cS("tab label", "Post-processing"), settings_page::post_processing);
+			if (system.passthrough_supported() != xr::passthrough_type::none)
+				settings_item(ICON_FA_VR_CARDBOARD, _cS("tab label", "Mixed reality"), settings_page::mixed_reality);
 			settings_item(ICON_FA_KEYBOARD, _cS("tab label", "Devices"), settings_page::devices);
 			settings_item(ICON_FA_LOCATION_CROSSHAIRS, _cS("tab label", "Tracking"), settings_page::tracking);
 			settings_item(ICON_FA_GEARS, _cS("tab label", "System"), settings_page::system);
@@ -1152,7 +1164,8 @@ void scenes::stream::draw_gui(XrTime predicted_display_time, XrDuration predicte
 		             height,
 		             composition_layer_depth_test_supported,
 		             composition_layer_depth_test_supported ? layer_rays : layer_controllers | layer_rays,
-		             {});
+		             {},
+		             cutout_preview);
 		if (composition_layer_depth_test_supported)
 			set_depth_test(true, XR_COMPARE_OP_LESS_FB);
 	}

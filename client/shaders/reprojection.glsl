@@ -24,6 +24,8 @@ layout(push_constant) uniform pc
 	ivec4 a_rect;
 	vec4 scale;
 	vec4 bias;
+	vec4 key_color;  // rgb: chroma key colour, w: chroma key enabled
+	vec4 key_params; // x: threshold, y: smoothness, z: spill, w: opacity
 };
 
 #ifdef VERT_SHADER
@@ -69,6 +71,32 @@ vec4 sRGB_to_linear_rgba(vec4 x)
 	        x.a);
 }
 
+vec2 chroma(vec3 c)
+{
+	// BT.709 CbCr
+	return vec2(
+	        dot(c, vec3(-0.1146, -0.3854, 0.5)),
+	        dot(c, vec3(0.5, -0.4542, -0.0458)));
+}
+
+// returns the alpha of the pixel and removes the key colour spill
+float chroma_key(inout vec3 c)
+{
+	float d = distance(chroma(c), chroma(key_color.rgb));
+	float a = smoothstep(key_params.x, key_params.x + key_params.y, d);
+
+	// clamp the dominant channel of the key colour to the average of the other two
+	vec3 key = key_color.rgb;
+	if (key.g >= key.r && key.g >= key.b)
+		c.g = mix(c.g, min(c.g, 0.5 * (c.r + c.b)), key_params.z * (1 - a));
+	else if (key.b >= key.r)
+		c.b = mix(c.b, min(c.b, 0.5 * (c.r + c.g)), key_params.z * (1 - a));
+	else
+		c.r = mix(c.r, min(c.r, 0.5 * (c.g + c.b)), key_params.z * (1 - a));
+
+	return a;
+}
+
 void main()
 {
 	if (alpha == 1)
@@ -81,24 +109,31 @@ void main()
 		outColor = vec4(texture(rgb[0], inUV.xy).rgb, texture(rgb[1], a).r);
 	}
 	else
-		outColor = texture(rgb[0], inUV.xy).rgba;
+	{
+		outColor = vec4(texture(rgb[0], inUV.xy).rgb, 1);
+
+		// the application did not provide alpha, compute it from the key colour
+		if (key_color.w > 0)
+			outColor.a = chroma_key(outColor.rgb);
+	}
 
 	if (do_srgb)
 	{
 		outColor = sRGB_to_linear_rgba(outColor);
 	}
 
-	if (alpha == 0)
-	{
-		outColor = outColor * scale + bias;
-	}
-	else if (outColor.a < 0.02)
+	// colour from the alpha stream is premultiplied
+	if (alpha == 1 && outColor.a >= 0.02)
+		outColor.rgb /= outColor.a;
+
+	outColor.a *= key_params.w;
+
+	if (outColor.a < 0.02)
 	{
 		outColor = vec4(0);
 	}
 	else
 	{
-		outColor.rgb /= outColor.a;
 		outColor = outColor * scale + bias;
 		outColor.rgb *= outColor.a;
 	}

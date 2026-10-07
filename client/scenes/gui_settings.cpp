@@ -29,12 +29,14 @@
 #include "configuration.h"
 #include "decoder/decoder.h"
 #include "render/imgui_impl.h"
+#include "render/scene_renderer.h"
 #include "render/ui_theme.h"
 #include "render/ui_widgets.h"
 #include "stream.h"
 #include "utils/i18n.h"
 #include "xr/instance.h"
 #include "xr/session.h"
+#include "xr/space.h"
 #include "xr/system.h"
 
 #include "imgui.h"
@@ -44,6 +46,9 @@
 #include <boost/locale.hpp>
 #include <cmath>
 #include <functional>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <list>
 #include <locale>
 #include <optional>
 #include <spdlog/fmt/fmt.h>
@@ -835,6 +840,260 @@ void settings_system(const settings_context & ctx)
 
 	if (disable_instream_gui)
 		ImGui::OpenPopup("confirm disable in stream gui");
+}
+
+void settings_mixed_reality(const settings_context & ctx)
+{
+	auto & config = ctx.config;
+	auto & default_config = ctx.default_config;
+	auto & mr = config.mixed_reality;
+	const auto & default_mr = default_config.mixed_reality;
+
+	ui::page_header(_cS("page header title", "Mixed reality"), _cS("page header subtitle", "Show passthrough through the streamed image."));
+
+	if (ctx.system.passthrough_supported() == xr::passthrough_type::none)
+	{
+		ImGui::TextWrapped("%s", _("This headset does not support passthrough.").c_str());
+		return;
+	}
+
+	// chroma key
+	std::vector<setting> chroma;
+
+	struct key_preset
+	{
+		std::string name;
+		glm::vec3 color;
+	};
+	const std::vector<key_preset> presets{
+	        {_C("chroma key colour", "Green"), {0, 1, 0}},
+	        {_C("chroma key colour", "Blue"), {0, 0, 1}},
+	        {_C("chroma key colour", "Magenta"), {1, 0, 1}},
+	        {_C("chroma key colour", "Black"), {0, 0, 0}},
+	};
+	auto preset_index = [presets](const glm::vec3 & color) {
+		for (size_t i = 0; i < presets.size(); ++i)
+			if (presets[i].color == color)
+				return int(i);
+		return int(presets.size()); // custom
+	};
+	auto chroma_enabled = [&mr] { return mr.chroma_key; };
+
+	chroma.push_back({
+	        .id = "##chroma_key",
+	        .label = _C("setting name", "Chroma key"),
+	        .description = _("Show passthrough where the image matches the key colour."),
+	        .ui = ui_kind::toggle,
+	        .get_bool = [&mr] { return mr.chroma_key; },
+	        .set_bool = [&config, &mr](bool v) { mr.chroma_key = v; config.save(); },
+	        .default_bool = default_mr.chroma_key,
+	});
+
+	chroma.push_back({
+	        .id = "##key_color",
+	        .label = _C("setting name", "Key colour"),
+	        .ui = ui_kind::combo,
+	        .get_int = [&mr, preset_index] { return preset_index(mr.key_color); },
+	        .set_int = [&config, &mr, presets](int v) {
+		        if (v < int(presets.size()))
+		        {
+			        mr.key_color = presets[v].color;
+			        config.save();
+		        } },
+	        .options = [presets] {
+		        std::vector<std::string> o;
+		        for (const auto & p: presets)
+			        o.push_back(p.name);
+		        o.push_back(_C("chroma key colour", "Custom"));
+		        return o; },
+	        .title = _C("setting name", "Key colour"),
+	        .default_int = preset_index(default_mr.key_color),
+	        .enabled = chroma_enabled,
+	});
+
+	const std::array<std::pair<const char *, std::string>, 3> channels{{
+	        {"##key_red", _C("setting name", "Key red")},
+	        {"##key_green", _C("setting name", "Key green")},
+	        {"##key_blue", _C("setting name", "Key blue")},
+	}};
+	for (int c = 0; c < 3; ++c)
+	{
+		chroma.push_back({
+		        .id = channels[c].first,
+		        .label = channels[c].second,
+		        .ui = ui_kind::slider,
+		        .get_int = [&mr, c] { return int(std::lround(mr.key_color[c] * 255)); },
+		        .set_int = [&config, &mr, c](int v) { mr.key_color[c] = v / 255.f; config.save(); },
+		        .v_min = 0,
+		        .v_max = 255,
+		        .fmt = "%d",
+		        .default_int = int(std::lround(default_mr.key_color[c] * 255)),
+		        .enabled = chroma_enabled,
+		});
+	}
+
+	auto percent_slider = [&](const char * id, std::string label, std::string description, float configuration::mixed_reality_settings::* member, int max, std::function<bool()> enabled) {
+		chroma.push_back({
+		        .id = id,
+		        .label = std::move(label),
+		        .description = std::move(description),
+		        .ui = ui_kind::slider,
+		        .get_int = [&mr, member] { return int(std::lround(mr.*member * 100)); },
+		        .set_int = [&config, &mr, member](int v) { mr.*member = v / 100.f; config.save(); },
+		        .v_min = 0,
+		        .v_max = max,
+		        .fmt = "%d%%",
+		        .default_int = int(std::lround(default_mr.*member * 100)),
+		        .enabled = std::move(enabled),
+		});
+	};
+
+	percent_slider("##key_threshold", _C("setting name", "Key threshold"), _("How different from the key colour a pixel can be and still be replaced by passthrough."), &configuration::mixed_reality_settings::key_threshold, 50, chroma_enabled);
+	percent_slider("##key_smoothness", _C("setting name", "Key smoothness"), _("Width of the soft edge around keyed areas. Increase it if edges look blocky because of video compression."), &configuration::mixed_reality_settings::key_smoothness, 50, chroma_enabled);
+	percent_slider("##key_spill", _C("setting name", "Spill removal"), _("Remove the key colour reflected on the edges of objects."), &configuration::mixed_reality_settings::key_spill, 100, chroma_enabled);
+	percent_slider("##opacity", _C("setting name", "Stream opacity"), _("Lower to see the room through the whole streamed image."), &configuration::mixed_reality_settings::opacity, 100, {});
+
+	render_settings(ctx, "##mixed_reality", chroma);
+
+	// cutouts
+	std::vector<setting> cutouts;
+
+	auto place_at_controller = [&ctx](configuration::cutout_box & box) {
+		auto pose = application::locate_controller(
+		        application::space(xr::spaces::aim_right),
+		        application::space(xr::spaces::world),
+		        ctx.instance.now());
+		if (not pose)
+			return false;
+
+		// keep the box upright, only follow the controller yaw
+		glm::vec3 forward = pose->second * glm::vec3(0, 0, -1);
+		box.position = pose->first;
+		box.orientation = glm::angleAxis(std::atan2(-forward.x, -forward.z), glm::vec3(0, 1, 0));
+		return true;
+	};
+
+	cutouts.push_back({
+	        .id = "##cutouts",
+	        .label = _C("setting name", "World cutouts"),
+	        .description = _("Show passthrough inside boxes placed in the room, for instance around a desk or a keyboard."),
+	        .ui = ui_kind::toggle,
+	        .get_bool = [&mr] { return mr.cutouts; },
+	        .set_bool = [&config, &mr](bool v) { mr.cutouts = v; config.save(); },
+	        .default_bool = default_mr.cutouts,
+	});
+
+	cutouts.push_back({
+	        .id = "##cutout_feather",
+	        .label = _C("setting name", "Edge softness"),
+	        .ui = ui_kind::slider,
+	        .get_int = [&mr] { return int(std::lround(mr.cutout_feather * 100)); },
+	        .set_int = [&config, &mr](int v) { mr.cutout_feather = v / 100.f; config.save(); },
+	        .v_min = 0,
+	        .v_max = 20,
+	        .fmt = "%d cm",
+	        .default_int = int(std::lround(default_mr.cutout_feather * 100)),
+	        .enabled = [&mr] { return mr.cutouts; },
+	});
+
+	cutouts.push_back({
+	        .id = "##cutout_add",
+	        .label = _C("setting name", "New box"),
+	        .description = _("Add a box at the position of the right controller."),
+	        .ui = ui_kind::button,
+	        .button_label = _C("button label to add a cutout box", "Add"),
+	        .on_click = [&config, &mr, place_at_controller] {
+		        configuration::cutout_box box;
+		        if (place_at_controller(box))
+		        {
+			        mr.boxes.push_back(box);
+			        mr.cutouts = true;
+			        config.save();
+		        } },
+	        .enabled = [&mr] { return mr.cutouts; },
+	        .disabled_tooltip = _("Enable world cutouts to change this setting."),
+	});
+
+	// imgui ids must outlive render_settings, std::list does not move its elements
+	std::list<std::string> ids;
+	auto id = [&ids](size_t i, std::string_view name) -> const char * {
+		return ids.emplace_back(fmt::format("##cutout_{}_{}", i, name)).c_str();
+	};
+
+	const std::array<std::string, 3> dimension_names{
+	        _C("setting name", "Width"),
+	        _C("setting name", "Height"),
+	        _C("setting name", "Depth"),
+	};
+
+	for (size_t i = 0; i < mr.boxes.size(); ++i)
+	{
+		// boxes can be deleted while the list is rendered
+		auto valid = [&mr, i] { return i < mr.boxes.size(); };
+
+		for (int d = 0; d < 3; ++d)
+		{
+			// x: width, y: height, z: depth
+			cutouts.push_back({
+			        .id = id(i, std::array{"width", "height", "depth"}[d]),
+			        .label = fmt::format(_cF("box number and dimension", "Box {}: {}"), i + 1, dimension_names[d]),
+			        .ui = ui_kind::slider,
+			        .get_int = [&mr, valid, i, d] { return valid() ? int(std::lround(mr.boxes[i].half_extent[d] * 200)) : 0; },
+			        .set_int = [&config, &mr, valid, i, d](int v) {
+				        if (valid())
+				        {
+					        mr.boxes[i].half_extent[d] = v / 200.f;
+					        config.save();
+				        } },
+			        .v_min = 5,
+			        .v_max = 400,
+			        .fmt = "%d cm",
+			        .enabled = [&mr, valid] { return mr.cutouts and valid(); },
+			});
+		}
+
+		cutouts.push_back({
+		        .id = id(i, "move"),
+		        .label = fmt::format(_cF("box number", "Box {}: position"), i + 1),
+		        .description = _("Move the box to the right controller."),
+		        .ui = ui_kind::button,
+		        .button_label = _C("button label to move a cutout box", "Move here"),
+		        .on_click = [&config, &mr, valid, i, place_at_controller] {
+			        if (valid() and place_at_controller(mr.boxes[i]))
+				        config.save(); },
+		        .enabled = [&mr, valid] { return mr.cutouts and valid(); },
+		});
+
+		cutouts.push_back({
+		        .id = id(i, "delete"),
+		        .label = fmt::format(_cF("box number", "Box {}: remove"), i + 1),
+		        .ui = ui_kind::button,
+		        .button_label = _C("button label to delete a cutout box", "Delete"),
+		        .on_click = [&config, &mr, valid, i] {
+			        if (valid())
+			        {
+				        mr.boxes.erase(mr.boxes.begin() + i);
+				        config.save();
+			        } },
+		        .enabled = valid,
+		});
+	}
+
+	render_settings(ctx, "##mixed_reality_cutouts", cutouts);
+}
+
+void draw_cutout_preview(scene_renderer & renderer, const configuration & config, const glm::mat4 & stage_to_space)
+{
+	const auto & mr = config.mixed_reality;
+
+	// green when the cutouts are shown, grey when they are disabled
+	const glm::vec4 color = mr.cutouts ? glm::vec4(0, 1, 0, 1) : glm::vec4(0.5, 0.5, 0.5, 1);
+
+	for (const auto & box: mr.boxes)
+	{
+		const glm::mat4 model = stage_to_space * glm::translate(glm::mat4(1), box.position) * glm::mat4_cast(box.orientation);
+		renderer.debug_draw_box(model, -box.half_extent, box.half_extent, color);
+	}
 }
 
 void settings_theme(const settings_context & ctx)

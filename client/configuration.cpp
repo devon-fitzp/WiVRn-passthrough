@@ -218,6 +218,90 @@ void configuration::set_feature(feature f, bool state)
 	save();
 }
 
+static float get_float(simdjson::simdjson_result<simdjson::dom::element> e, float fallback)
+{
+	if (e.is_double())
+		return double(e.get_double());
+	if (e.is_int64())
+		return int64_t(e.get_int64());
+	return fallback;
+}
+
+template <glm::length_t N>
+static glm::vec<N, float> get_vec(simdjson::simdjson_result<simdjson::dom::element> e, glm::vec<N, float> fallback)
+{
+	if (not e.is_array())
+		return fallback;
+	simdjson::dom::array a = e.get_array();
+	if (a.size() != N)
+		return fallback;
+	glm::vec<N, float> res;
+	for (glm::length_t i = 0; i < N; ++i)
+		res[i] = get_float(a.at(i), fallback[i]);
+	return res;
+}
+
+static configuration::mixed_reality_settings load_mixed_reality(simdjson::dom::object obj)
+{
+	configuration::mixed_reality_settings mr;
+	if (auto v = obj["chroma_key"]; v.is_bool())
+		mr.chroma_key = v.get_bool();
+	mr.key_color = get_vec<3>(obj["key_color"], mr.key_color);
+	mr.key_threshold = get_float(obj["key_threshold"], mr.key_threshold);
+	mr.key_smoothness = get_float(obj["key_smoothness"], mr.key_smoothness);
+	mr.key_spill = get_float(obj["key_spill"], mr.key_spill);
+	mr.opacity = std::clamp<float>(get_float(obj["opacity"], mr.opacity), 0, 1);
+	if (auto v = obj["cutouts"]; v.is_bool())
+		mr.cutouts = v.get_bool();
+	mr.cutout_feather = get_float(obj["cutout_feather"], mr.cutout_feather);
+	if (auto boxes = obj["boxes"]; boxes.is_array())
+	{
+		for (simdjson::dom::element b: simdjson::dom::array(boxes))
+		{
+			configuration::cutout_box box;
+			box.position = get_vec<3>(b["position"], box.position);
+			box.half_extent = get_vec<3>(b["half_extent"], box.half_extent);
+			// stored as w, x, y, z
+			glm::vec4 q = get_vec<4>(b["orientation"], {1, 0, 0, 0});
+			box.orientation = glm::normalize(glm::quat(q[0], q[1], q[2], q[3]));
+			mr.boxes.push_back(box);
+		}
+	}
+	return mr;
+}
+
+static void save_vec3(std::ostream & os, const glm::vec3 & v)
+{
+	os << "[" << v.x << "," << v.y << "," << v.z << "]";
+}
+
+static void save_mixed_reality(std::ostream & os, const configuration::mixed_reality_settings & mr)
+{
+	os << "{\"chroma_key\":" << std::boolalpha << mr.chroma_key;
+	os << ",\"key_color\":";
+	save_vec3(os, mr.key_color);
+	os << ",\"key_threshold\":" << mr.key_threshold;
+	os << ",\"key_smoothness\":" << mr.key_smoothness;
+	os << ",\"key_spill\":" << mr.key_spill;
+	os << ",\"opacity\":" << mr.opacity;
+	os << ",\"cutouts\":" << std::boolalpha << mr.cutouts;
+	os << ",\"cutout_feather\":" << mr.cutout_feather;
+	os << ",\"boxes\":[";
+	const char * sep = "";
+	for (const auto & box: mr.boxes)
+	{
+		os << sep;
+		sep = ",";
+		os << "{\"position\":";
+		save_vec3(os, box.position);
+		os << ",\"orientation\":[" << box.orientation.w << "," << box.orientation.x << "," << box.orientation.y << "," << box.orientation.z << "]";
+		os << ",\"half_extent\":";
+		save_vec3(os, box.half_extent);
+		os << "}";
+	}
+	os << "]}";
+}
+
 configuration::configuration(xr::system & system, xr::session & session)
 {
 	passthrough_enabled = system.passthrough_supported() == xr::passthrough_type::color;
@@ -298,13 +382,21 @@ configuration::configuration(xr::system & system, xr::session & session, const s
 				openxr_post_processing.sharpening = v.get_int64();
 		}
 
+		if (auto val = root["mixed_reality"]; val.is_object())
+			mixed_reality = load_mixed_reality(val.get_object());
+
 		// feature flags, keyed by enum name
 		for (const auto & [f, name]: magic_enum::enum_entries<feature>())
 			if (auto val = root[name]; val.is_bool())
 				features[f] = val.get_bool();
 
 		if (system.passthrough_supported() == xr::passthrough_type::none)
+		{
 			passthrough_enabled = false;
+			mixed_reality.chroma_key = false;
+			mixed_reality.opacity = 1;
+			mixed_reality.cutouts = false;
+		}
 	}
 	catch (std::exception & e)
 	{
@@ -391,6 +483,9 @@ void configuration::save()
 	// nested object
 	json << ",\"openxr_post_processing\":{\"super_sampling\":" << openxr_post_processing.super_sampling;
 	json << ",\"sharpening\":" << openxr_post_processing.sharpening << "}";
+
+	json << ",\"mixed_reality\":";
+	save_mixed_reality(json, mixed_reality);
 
 	// feature flags, keyed by enum name
 	for (auto & [key, value]: features)

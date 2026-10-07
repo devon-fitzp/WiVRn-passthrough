@@ -23,6 +23,7 @@
 #include "configuration.h"
 #include "constants.h"
 #include "glm/geometric.hpp"
+#include "gui_settings.h"
 #include "hand_model.h"
 #include "imgui.h"
 #include "openxr/openxr.h"
@@ -1044,6 +1045,13 @@ void scenes::lobby::render(const XrFrameState & frame_state)
 #endif
 
 	std::vector<std::pair<int, XrCompositionLayerQuad>> imgui_layers = draw_gui(frame_state.predictedDisplayTime);
+
+	// cutout boxes are stored in the stage space, without the height offset
+	if (current_tab == tab::mixed_reality)
+	{
+		if (auto stage = application::locate_controller(application::space(xr::spaces::world), world_space, frame_state.predictedDisplayTime))
+			wivrn::gui::draw_cutout_preview(*renderer, application::get_config(), glm::translate(glm::mat4(1), stage->first) * glm::mat4_cast(stage->second));
+	}
 
 #if WIVRN_CLIENT_DEBUG_MENU
 	if (auto * node = world.try_get<components::node>(debug_primitive_to_highlight.first);

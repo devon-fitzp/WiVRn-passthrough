@@ -25,6 +25,7 @@
 #include "vk/shader.h"
 #include "vk/specialization_constants.h"
 #include <array>
+#include <cstring>
 #include <glm/glm.hpp>
 #include <glm/gtx/quaternion.hpp>
 #include <vk_mem_alloc.h>
@@ -45,7 +46,31 @@ struct vert_pc
 	glm::ivec4 a_rect;
 	std::array<float, 4> scale;
 	std::array<float, 4> bias;
+	std::array<float, 4> key_color;
+	std::array<float, 4> key_params;
 };
+
+static_assert(sizeof(vert_pc) <= 128);
+static_assert(sizeof(stream_defoveator::cutout) <= 128);
+
+// unit cube, triangles are counter clockwise when seen from outside
+static const std::array<glm::vec3, 36> cube_vertices = [] {
+	// corners of each face, counter clockwise when seen from outside
+	const std::array<std::array<glm::vec3, 4>, 6> faces{{
+	        {{{1, -1, -1}, {1, 1, -1}, {1, 1, 1}, {1, -1, 1}}},
+	        {{{-1, -1, 1}, {-1, 1, 1}, {-1, 1, -1}, {-1, -1, -1}}},
+	        {{{-1, 1, 1}, {1, 1, 1}, {1, 1, -1}, {-1, 1, -1}}},
+	        {{{-1, -1, -1}, {1, -1, -1}, {1, -1, 1}, {-1, -1, 1}}},
+	        {{{-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}}},
+	        {{{1, -1, -1}, {-1, -1, -1}, {-1, 1, -1}, {1, 1, -1}}},
+	}};
+	std::array<glm::vec3, 36> res;
+	auto it = res.begin();
+	for (const auto & f: faces)
+		for (int i: {0, 1, 2, 0, 2, 3})
+			*it++ = f[i];
+	return res;
+}();
 
 void stream_defoveator::ensure_vertices(size_t num_vertices)
 {
@@ -192,6 +217,104 @@ stream_defoveator::pipeline_t & stream_defoveator::ensure_pipeline(size_t view, 
 	return target;
 }
 
+void stream_defoveator::ensure_cutout_pipeline()
+{
+	if (*cutout_pipeline)
+		return;
+
+	if (not cube_buffer)
+	{
+		cube_buffer = buffer_allocation(
+		        device,
+		        vk::BufferCreateInfo{
+		                .size = sizeof(cube_vertices),
+		                .usage = vk::BufferUsageFlagBits::eVertexBuffer,
+		                .sharingMode = vk::SharingMode::eExclusive,
+		        },
+		        VmaAllocationCreateInfo{
+		                .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		        });
+		memcpy(cube_buffer.map(), cube_vertices.data(), sizeof(cube_vertices));
+	}
+
+	vk::PushConstantRange pc_range{
+	        .stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+	        .size = sizeof(cutout),
+	};
+
+	cutout_layout = vk::raii::PipelineLayout(device, vk::PipelineLayoutCreateInfo{
+	                                                         .pushConstantRangeCount = 1,
+	                                                         .pPushConstantRanges = &pc_range,
+	                                                 });
+
+	auto vertex_shader = load_shader(device, "cutout.vert");
+	auto fragment_shader = load_shader(device, "cutout.frag");
+
+	vk::pipeline_builder pipeline_info{
+	        .flags = {},
+	        .Stages = {
+	                {
+	                        .stage = vk::ShaderStageFlagBits::eVertex,
+	                        .module = *vertex_shader,
+	                        .pName = "main",
+	                },
+	                {
+	                        .stage = vk::ShaderStageFlagBits::eFragment,
+	                        .module = *fragment_shader,
+	                        .pName = "main",
+	                },
+	        },
+	        .VertexBindingDescriptions = {
+	                {
+	                        .binding = 0,
+	                        .stride = sizeof(glm::vec3),
+	                        .inputRate = vk::VertexInputRate::eVertex,
+	                },
+	        },
+	        .VertexAttributeDescriptions = {
+	                {
+	                        .location = 0,
+	                        .binding = 0,
+	                        .format = vk::Format::eR32G32B32Sfloat,
+	                        .offset = 0,
+	                },
+	        },
+	        .InputAssemblyState = {{
+	                .topology = vk::PrimitiveTopology::eTriangleList,
+	        }},
+	        .Viewports = {{}},
+	        .Scissors = {{}},
+	        // Only draw back faces: they cover the box exactly once, even from the inside
+	        .RasterizationState = {{
+	                .polygonMode = vk::PolygonMode::eFill,
+	                .cullMode = vk::CullModeFlagBits::eFront,
+	                .frontFace = vk::FrontFace::eCounterClockwise,
+	                .lineWidth = 1,
+	        }},
+	        .MultisampleState = {{
+	                .rasterizationSamples = vk::SampleCountFlagBits::e1,
+	        }},
+	        .ColorBlendState = {.flags = {}},
+	        // Output is premultiplied: dst * (1 - a) fades both colour and alpha
+	        .ColorBlendAttachments = {{
+	                .blendEnable = true,
+	                .srcColorBlendFactor = vk::BlendFactor::eZero,
+	                .dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
+	                .colorBlendOp = vk::BlendOp::eAdd,
+	                .srcAlphaBlendFactor = vk::BlendFactor::eZero,
+	                .dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
+	                .alphaBlendOp = vk::BlendOp::eAdd,
+	                .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
+	        }},
+	        .DynamicStates = {vk::DynamicState::eViewport, vk::DynamicState::eScissor},
+	        .layout = *cutout_layout,
+	        .renderPass = *renderpass,
+	        .subpass = 0,
+	};
+
+	cutout_pipeline = device.createGraphicsPipeline(application::get_pipeline_cache(), pipeline_info);
+}
+
 stream_defoveator::stream_defoveator(
         vk::raii::Device & device,
         vk::raii::PhysicalDevice & physical_device,
@@ -291,6 +414,7 @@ void stream_defoveator::reset_pipelines()
 		p = {};
 	for (auto & p: pipeline_a)
 		p = {};
+	cutout_pipeline = nullptr;
 }
 
 static size_t required_vertices(const wivrn::to_headset::foveation_parameter & p)
@@ -308,6 +432,7 @@ void stream_defoveator::defoveate(vk::raii::CommandBuffer & command_buffer,
                                   const std::array<input, 2> & inputs,
                                   std::array<float, 4> scale,
                                   std::array<float, 4> bias,
+                                  const mixed_reality & mr,
                                   int destination)
 {
 	if (destination < 0 || destination >= (int)output_images.size())
@@ -430,6 +555,8 @@ void stream_defoveator::defoveate(vk::raii::CommandBuffer & command_buffer,
 		                             input.rect_a.extent.height),
 		        .scale = scale,
 		        .bias = bias,
+		        .key_color = mr.key_color,
+		        .key_params = mr.key_params,
 		};
 
 		device.updateDescriptorSets(descriptor_writes, {});
@@ -440,6 +567,19 @@ void stream_defoveator::defoveate(vk::raii::CommandBuffer & command_buffer,
 		command_buffer.pushConstants<vert_pc>(*pipeline.layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pc);
 		command_buffer.bindVertexBuffers(0, vk::Buffer(buffer), vertices_size * view);
 		command_buffer.draw(required_vertices(foveation[view]), 1, 0, 0);
+
+		if (not mr.cutouts[view].empty())
+		{
+			ensure_cutout_pipeline();
+			command_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *cutout_pipeline);
+			command_buffer.bindVertexBuffers(0, vk::Buffer(cube_buffer), vk::DeviceSize(0));
+			for (const auto & box: mr.cutouts[view])
+			{
+				command_buffer.pushConstants<cutout>(*cutout_layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, box);
+				command_buffer.draw(cube_vertices.size(), 1, 0, 0);
+			}
+		}
+
 		command_buffer.endRenderPass();
 	}
 }

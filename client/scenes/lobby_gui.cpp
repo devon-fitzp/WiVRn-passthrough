@@ -1195,6 +1195,10 @@ std::vector<std::pair<int, XrCompositionLayerQuad>> scenes::lobby::draw_gui(XrTi
 				gui_post_processing();
 				break;
 
+			case tab::mixed_reality:
+				gui_mixed_reality();
+				break;
+
 			case tab::devices:
 				gui_devices();
 				break;
@@ -1260,6 +1264,9 @@ std::vector<std::pair<int, XrCompositionLayerQuad>> scenes::lobby::draw_gui(XrTi
 				current_tab = tab::streaming;
 			if (wivrn::ui::nav_item(ICON_FA_WAND_MAGIC_SPARKLES, _cS("tab label", "Post-processing"), current_tab == tab::post_processing))
 				current_tab = tab::post_processing;
+			if (system.passthrough_supported() != xr::passthrough_type::none and
+			    wivrn::ui::nav_item(ICON_FA_VR_CARDBOARD, _cS("tab label", "Mixed reality"), current_tab == tab::mixed_reality))
+				current_tab = tab::mixed_reality;
 			if (wivrn::ui::nav_item(ICON_FA_KEYBOARD, _cS("tab label", "Devices"), current_tab == tab::devices))
 				current_tab = tab::devices;
 			if (wivrn::ui::nav_item(ICON_FA_LOCATION_CROSSHAIRS, _cS("tab label", "Tracking"), current_tab == tab::tracking))

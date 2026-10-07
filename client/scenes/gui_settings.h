@@ -21,9 +21,11 @@
 
 #include <cstdint>
 #include <functional>
+#include <glm/glm.hpp>
 
 class configuration;
 class imgui_context;
+class scene_renderer;
 
 namespace xr
 {
@@ -63,6 +65,10 @@ struct settings_context
 void settings_video(const settings_context &);
 void settings_streaming(const settings_context &);
 void settings_post_processing(const settings_context &);
+void settings_mixed_reality(const settings_context &);
+
+// outline the mixed reality cutout boxes, stage_to_space converts from the stage space they are stored in
+void draw_cutout_preview(scene_renderer &, const configuration &, const glm::mat4 & stage_to_space);
 void settings_audio(const settings_context &);
 void settings_devices(const settings_context &);
 bool settings_tracking(const settings_context &);

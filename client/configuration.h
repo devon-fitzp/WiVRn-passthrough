@@ -23,6 +23,8 @@
 #include "wivrn_packets.h"
 
 #include <filesystem>
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -110,6 +112,34 @@ public:
 		XrCompositionLayerSettingsFlagsFB sharpening = 0;
 	};
 	openxr_post_processing_settings openxr_post_processing{};
+
+	// box in world (stage) space, the stream is hidden inside it
+	struct cutout_box
+	{
+		glm::vec3 position{0, 0, 0};
+		glm::quat orientation{1, 0, 0, 0};
+		glm::vec3 half_extent{0.15, 0.15, 0.15};
+	};
+
+	// client side blending of the stream with passthrough
+	struct mixed_reality_settings
+	{
+		bool chroma_key = false;
+		glm::vec3 key_color{0, 1, 0}; // sRGB, as decoded
+		float key_threshold = 0.15;   // CbCr distance under which pixels are fully keyed
+		float key_smoothness = 0.1;   // width of the soft edge
+		float key_spill = 0.5;        // despill strength
+		float opacity = 1;            // global stream opacity
+		bool cutouts = false;
+		float cutout_feather = 0.02; // metres
+		std::vector<cutout_box> boxes;
+
+		bool active() const
+		{
+			return chroma_key or opacity < 1 or (cutouts and not boxes.empty());
+		}
+	};
+	mixed_reality_settings mixed_reality{};
 
 	std::string virtual_keyboard_layout = "QWERTY";
 
